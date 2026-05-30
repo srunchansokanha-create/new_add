@@ -91,7 +91,7 @@ button{
   border-radius:10px;
 }
 
-/* ================= LOADER ================= */
+/* LOADER */
 .loader-bar{
   height:4px;
   width:100%;
@@ -100,6 +100,7 @@ button{
   background:#0f172a;
   overflow:hidden;
   position:relative;
+  display:none;
 }
 
 .loader-bar::before{
@@ -108,12 +109,12 @@ button{
   height:100%;
   width:40%;
   background:linear-gradient(90deg,transparent,#38bdf8,transparent);
-  animation:move 1s infinite linear;
+  animation:move 1s linear infinite;
 }
 
 @keyframes move{
-  0%{ left:-40%; }
-  100%{ left:100%; }
+  0%{left:-40%}
+  100%{left:100%}
 }
 </style>
 </head>
@@ -122,7 +123,6 @@ button{
 
 <div class="container">
 
-<!-- TAB -->
 <div class="tabBar">
   <button onclick="showPage('home')">Home</button>
   <button onclick="showPage('accounts')">Accounts</button>
@@ -136,6 +136,10 @@ button{
 
 <button class="start" onclick="exportMembers()">Export Members</button>
 
+<div id="exportLoading" style="display:none;margin-top:10px;color:#38bdf8;">
+  ⏳ Exporting members...
+</div>
+
 <h3>Target Group</h3>
 <input id="targetGroup">
 
@@ -146,8 +150,7 @@ button{
 <button class="stop" onclick="stop()">Stop</button>
 <button class="restart" onclick="restart()">Restart</button>
 
-<!-- LOADER -->
-<div id="loaderBar" class="loader-bar" style="display:none;"></div>
+<div id="loaderBar" class="loader-bar"></div>
 
 <div class="stats">
   <div>Success: <span id="success">0</span></div>
@@ -184,7 +187,7 @@ button{
 
 <script>
 
-/* ================= STATE ================= */
+/* ================= KEEP SELECT STATE FIX ================= */
 let selectedAccounts = new Set();
 
 /* ================= LOAD ACCOUNTS ================= */
@@ -198,26 +201,27 @@ async function loadAccounts(){
   data.forEach(a => {
 
     let color = "#38bdf8";
-    if(a.status === "ACTIVE") color = "#22c55e";
-    if(a.status === "ERROR") color = "#ef4444";
-    if(a.status === "FLOOD") color = "#f59e0b";
+    if(a.status==="ACTIVE") color="#22c55e";
+    if(a.status==="ERROR") color="#ef4444";
+    if(a.status==="FLOOD") color="#f59e0b";
 
     const checked = selectedAccounts.has(a.account) ? "checked" : "";
 
-    const row = document.createElement("tr");
+    const tr = document.createElement("tr");
 
-    row.innerHTML = `
+    tr.innerHTML = `
       <td><input type="checkbox" class="acc" value="${a.account}" ${checked}></td>
       <td>${a.account}</td>
       <td style="color:${color};font-weight:700">${a.status}</td>
     `;
 
-    tbody.appendChild(row);
+    tbody.appendChild(tr);
   });
 
   document.querySelectorAll(".acc").forEach(cb=>{
     cb.onchange = () => {
-      cb.checked ? selectedAccounts.add(cb.value) : selectedAccounts.delete(cb.value);
+      if(cb.checked) selectedAccounts.add(cb.value);
+      else selectedAccounts.delete(cb.value);
     };
   });
 }
@@ -229,20 +233,36 @@ function getAccounts(){
 
 /* ================= EXPORT ================= */
 async function exportMembers(){
+
   const accounts = getAccounts();
   if(!accounts.length) return alert("Select account");
 
   const group = document.getElementById("sourceGroup").value;
 
+  // 🔥 SHOW LOADING
+  document.getElementById("exportLoading").style.display = "block";
+
   const res = await fetch("/export-members",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ account:accounts[0], group })
+    body:JSON.stringify({
+      account:accounts[0],
+      group
+    })
   });
 
   const data = await res.json();
+
+  // 🔥 HIDE LOADING
+  document.getElementById("exportLoading").style.display = "none";
+
   if(data.success){
     document.getElementById("users").value = data.ids.join("\n");
+    document.getElementById("status").innerText =
+      `Exported ${data.ids.length} members`;
+  } else {
+    document.getElementById("status").innerText =
+      `Error: ${data.error}`;
   }
 }
 
@@ -252,18 +272,18 @@ async function start(){
   const accounts = getAccounts();
   const users = document.getElementById("users").value
     .split("\n")
-    .filter(x => x.trim());
+    .filter(x=>x.trim());
 
   const group = document.getElementById("targetGroup").value;
 
   if(!accounts.length) return alert("No account");
 
-  document.getElementById("loaderBar").style.display = "block";
-  document.getElementById("status").innerText = "Processing...";
+  document.getElementById("loaderBar").style.display="block";
+  document.getElementById("status").innerText="Running...";
 
   const res = await fetch("/start",{
     method:"POST",
-    headers:{ "Content-Type":"application/json" },
+    headers:{"Content-Type":"application/json"},
     body:JSON.stringify({
       group,
       usernames:users,
@@ -272,72 +292,55 @@ async function start(){
   });
 
   const data = await res.json();
-  document.getElementById("status").innerText = data.message;
-
-  selectedAccounts.clear();
-  loadAccounts();
+  document.getElementById("status").innerText=data.message;
 }
 
 /* ================= STOP ================= */
 async function stop(){
-  document.getElementById("loaderBar").style.display = "none";
-
+  document.getElementById("loaderBar").style.display="none";
   const r = await fetch("/stop",{method:"POST"});
-  document.getElementById("status").innerText = (await r.json()).message;
+  document.getElementById("status").innerText=(await r.json()).message;
 }
 
 /* ================= RESTART ================= */
 async function restart(){
-  document.getElementById("loaderBar").style.display = "none";
-
+  document.getElementById("loaderBar").style.display="none";
   await fetch("/restart",{method:"POST"});
-
-  document.getElementById("success").innerText = 0;
-  document.getElementById("fail").innerText = 0;
-  document.getElementById("memberList").innerHTML = "";
-  document.getElementById("status").innerText = "Reset done";
+  document.getElementById("success").innerText=0;
+  document.getElementById("fail").innerText=0;
+  document.getElementById("memberList").innerHTML="";
+  selectedAccounts.clear();
 }
 
-/* ================= LIVE UPDATE ================= */
-function live(){
-  setInterval(async()=>{
+/* ================= LIVE ================= */
+setInterval(async()=>{
 
-    const stats = await fetch("/stats").then(r=>r.json());
-    document.getElementById("success").innerText = stats.success;
-    document.getElementById("fail").innerText = stats.fail;
+  const stats = await fetch("/stats").then(r=>r.json());
+  document.getElementById("success").innerText=stats.success;
+  document.getElementById("fail").innerText=stats.fail;
 
-    const logs = await fetch("/member-logs").then(r=>r.json());
+  const logs = await fetch("/member-logs").then(r=>r.json());
 
-    const box = document.getElementById("memberList");
-    box.innerHTML = "";
+  const box = document.getElementById("memberList");
+  box.innerHTML="";
 
-    logs.slice(-20).forEach(l=>{
-      box.innerHTML += `
-        <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
-      `;
-    });
+  logs.slice(-20).forEach(l=>{
+    box.innerHTML+=`
+      <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
+    `;
+  });
 
-    const total = stats.success + stats.fail;
-    const inputTotal = document.getElementById("users").value.split("\n").filter(x=>x.trim()).length;
-
-    if(inputTotal > 0 && total >= inputTotal){
-      document.getElementById("loaderBar").style.display = "none";
-      document.getElementById("status").innerText = "Completed ✅";
-    }
-
-  },2000);
-}
+},2000);
 
 /* ================= PAGE ================= */
 function showPage(p){
-  document.getElementById("homePage").style.display = p==="home"?"block":"none";
-  document.getElementById("accountsPage").style.display = p==="accounts"?"block":"none";
+  document.getElementById("homePage").style.display=p==="home"?"block":"none";
+  document.getElementById("accountsPage").style.display=p==="accounts"?"block":"none";
 }
 
 /* INIT */
 showPage("home");
 loadAccounts();
-live();
 
 </script>
 
