@@ -1,33 +1,41 @@
 require("dotenv").config();
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const { Api } = require("telegram");
 
 const app = express();
+
 app.use(express.json());
 app.use(cors());
 
-const PORT = process.env.PORT || 3000;
+/* ========================
+   RENDER PORT FIX
+======================== */
+const PORT = process.env.PORT || 10000;
 const DELAY = parseInt(process.env.DELAY_MS) || 30000;
+
+/* ========================
+   SERVE INDEX.HTML
+======================== */
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 
 /* ========================
    STATE
 ======================== */
-
 let clients = {};
 let stats = { success: 0, fail: 0 };
 let logs = [];
-
 let isRunning = false;
-
-let accountStatus = {}; // 👈 ACTIVE / ERROR / FLOOD
+let accountStatus = {};
 
 /* ========================
    LOAD ACCOUNTS
 ======================== */
-
 for (let i = 1; i <= 10; i++) {
   const apiId = process.env[`API_ID_${i}`];
   const apiHash = process.env[`API_HASH_${i}`];
@@ -46,104 +54,74 @@ for (let i = 1; i <= 10; i++) {
 /* ========================
    HELPERS
 ======================== */
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function safeConnect(client) {
   try {
-    await client.connect();
+    if (!client.connected) await client.connect();
   } catch {}
 }
 
-/* ========================
-   ACCOUNT HEALTH CHECK
-======================== */
-
-async function checkAccount(name, client) {
+async function resolveEntity(client, input) {
   try {
-    await safeConnect(client);
-
-    const me = await client.getMe();
-
-    if (!me) {
-      accountStatus[name] = "ERROR";
-      return;
-    }
-
-    accountStatus[name] = "ACTIVE";
-    console.log(`✅ ${name} ACTIVE`);
-
-  } catch (err) {
-    const msg = err.message || "";
-
-    if (msg.includes("FLOOD_WAIT")) {
-      accountStatus[name] = "FLOOD";
-    } else {
-      accountStatus[name] = "ERROR";
-    }
-
-    console.log(`❌ ${name} = ${accountStatus[name]}`);
+    return await client.getEntity(input);
+  } catch {
+    return null;
   }
 }
 
 /* ========================
-   INIT CHECK ON START
+   ACCOUNT CHECK
 ======================== */
-
-(async () => {
+async function refreshAccountStatus() {
   for (const name of Object.keys(clients)) {
-    await checkAccount(name, clients[name]);
+    try {
+      await safeConnect(clients[name]);
+      await clients[name].getMe();
+      accountStatus[name] = "ACTIVE";
+    } catch (err) {
+      accountStatus[name] = err.message?.includes("FLOOD_WAIT")
+        ? "FLOOD"
+        : "ERROR";
+    }
   }
-})();
+}
 
 /* ========================
-   API: ACCOUNTS
+   API
 ======================== */
 
 app.get("/accounts", (req, res) => {
   res.json(Object.keys(clients));
 });
 
-/* ========================
-   API: ACCOUNT STATUS
-======================== */
-
 app.get("/account-status", (req, res) => {
-  const result = Object.keys(clients).map(name => ({
-    account: name,
-    status: accountStatus[name] || "UNKNOWN"
-  }));
-
-  res.json(result);
+  res.json(
+    Object.keys(clients).map(name => ({
+      account: name,
+      status: accountStatus[name] || "UNKNOWN"
+    }))
+  );
 });
 
-/* ========================
-   RECHECK ACCOUNTS
-======================== */
-
 app.post("/check-accounts", async (req, res) => {
-  for (const name of Object.keys(clients)) {
-    await checkAccount(name, clients[name]);
-  }
-
-  res.json({ message: "Rechecked accounts" });
+  await refreshAccountStatus();
+  res.json({ message: "checked" });
 });
 
 /* ========================
    EXPORT MEMBERS
 ======================== */
-
 app.post("/export-members", async (req, res) => {
   const { account, group } = req.body;
 
   const client = clients[account];
-  if (!client) return res.json({ success: false, error: "Account not found" });
+  if (!client) return res.json({ success: false });
 
   try {
     await safeConnect(client);
 
     const participants = await client.getParticipants(group);
-
     const ids = participants.map(p => p.username || p.id).filter(Boolean);
 
     res.json({ success: true, ids });
@@ -154,22 +132,22 @@ app.post("/export-members", async (req, res) => {
 });
 
 /* ========================
-   START PROCESS (FULL FIX)
+   START PROCESS
 ======================== */
-
 app.post("/start", async (req, res) => {
   const { group, usernames, accounts } = req.body;
 
-  if (isRunning) {
+  if (isRunning)
     return res.json({ message: "Already running" });
-  }
 
-  // 🔥 only ACTIVE accounts
-  const activeAccounts = accounts.filter(acc => accountStatus[acc] === "ACTIVE");
+  await refreshAccountStatus();
 
-  if (!activeAccounts.length) {
-    return res.json({ message: "No ACTIVE accounts available" });
-  }
+  const activeAccounts = accounts.filter(
+    a => accountStatus[a] === "ACTIVE"
+  );
+
+  if (!activeAccounts.length)
+    return res.json({ message: "No ACTIVE accounts" });
 
   isRunning = true;
   stats = { success: 0, fail: 0 };
@@ -178,93 +156,87 @@ app.post("/start", async (req, res) => {
   let userIndex = 0;
   let accIndex = 0;
 
-  async function isMember(client, group, user) {
+  while (isRunning && userIndex < usernames.length) {
+
+    const accountName = activeAccounts[accIndex];
+    const client = clients[accountName];
+    const username = usernames[userIndex];
+
     try {
-      await client.invoke(
-        new Api.channels.GetParticipant({
-          channel: group,
-          participant: user
-        })
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
-  (async () => {
-    while (isRunning && userIndex < usernames.length) {
+      await safeConnect(client);
 
-      const accountName = activeAccounts[accIndex];
-      const client = clients[accountName];
-      const username = usernames[userIndex];
+      const user = await resolveEntity(client, username);
+      const groupEntity = await resolveEntity(client, group);
 
-      try {
-        await safeConnect(client);
-
-        const user = await client.getEntity(username);
-
-        await client.invoke(
-          new Api.channels.InviteToChannel({
-            channel: group,
-            users: [user]
-          })
-        );
-
-        await sleep(2500);
-
-        // 🔥 REAL VERIFY (NO FAKE SUCCESS)
-        const ok = await isMember(client, group, user);
-
-        if (ok) {
-          stats.success++;
-          logs.push({ username, status: "success" });
-          console.log(`✅ REAL SUCCESS: ${username}`);
-        } else {
-          stats.fail++;
-          logs.push({ username, status: "fail" });
-          console.log(`❌ NOT JOINED: ${username}`);
-        }
-
+      if (!user || !groupEntity) {
+        stats.fail++;
+        logs.push({ username, status: "fail" });
         userIndex++;
-
-      } catch (err) {
-        const msg = err.message || "";
-
-        if (msg.includes("FLOOD_WAIT")) {
-          console.log(`⚠ FLOOD → switching account`);
-          accIndex = (accIndex + 1) % activeAccounts.length;
-        } else {
-          stats.fail++;
-          logs.push({ username, status: "fail" });
-          userIndex++;
-        }
+        continue;
       }
 
-      await sleep(DELAY);
+      await client.invoke(
+        new Api.channels.InviteToChannel({
+          channel: groupEntity,
+          users: [user]
+        })
+      );
+
+      await sleep(2000);
+
+      let ok = false;
+
+      try {
+        await client.invoke(
+          new Api.channels.GetParticipant({
+            channel: groupEntity,
+            participant: user
+          })
+        );
+        ok = true;
+      } catch {
+        ok = false;
+      }
+
+      if (ok) {
+        stats.success++;
+        logs.push({ username, status: "success" });
+      } else {
+        stats.fail++;
+        logs.push({ username, status: "fail" });
+      }
+
+      userIndex++;
+
+    } catch (err) {
+
+      if (err.message?.includes("FLOOD_WAIT")) {
+        accIndex = (accIndex + 1) % activeAccounts.length;
+      } else {
+        stats.fail++;
+        logs.push({ username, status: "fail" });
+        userIndex++;
+      }
     }
 
-    isRunning = false;
-    console.log("🛑 FINISHED");
-  })();
+    await sleep(DELAY);
+  }
+
+  isRunning = false;
 
   res.json({
-    message: `Started with ${activeAccounts.length} ACTIVE accounts`
+    message: "Finished"
   });
 });
 
 /* ========================
-   STOP
+   STOP / RESTART
 ======================== */
-
 app.post("/stop", (req, res) => {
   isRunning = false;
   res.json({ message: "Stopped" });
 });
-
-/* ========================
-   RESTART
-======================== */
 
 app.post("/restart", (req, res) => {
   isRunning = false;
@@ -276,15 +248,13 @@ app.post("/restart", (req, res) => {
 /* ========================
    STATS
 ======================== */
-
 app.get("/stats", (req, res) => {
   res.json(stats);
 });
 
 /* ========================
-   LOGS (SAFE LIMIT)
+   LOGS
 ======================== */
-
 app.get("/member-logs", (req, res) => {
   res.json(logs.slice(-500));
 });
@@ -292,7 +262,6 @@ app.get("/member-logs", (req, res) => {
 /* ========================
    START SERVER
 ======================== */
-
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`Server running on ${PORT}`);
 });
