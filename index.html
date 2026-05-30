@@ -90,6 +90,31 @@ button{
   padding:10px;
   border-radius:10px;
 }
+
+/* ================= LOADER ================= */
+.loader-bar{
+  height:4px;
+  width:100%;
+  margin-top:15px;
+  border-radius:10px;
+  background:#0f172a;
+  overflow:hidden;
+  position:relative;
+}
+
+.loader-bar::before{
+  content:"";
+  position:absolute;
+  height:100%;
+  width:40%;
+  background:linear-gradient(90deg,transparent,#38bdf8,transparent);
+  animation:move 1s infinite linear;
+}
+
+@keyframes move{
+  0%{ left:-40%; }
+  100%{ left:100%; }
+}
 </style>
 </head>
 
@@ -99,8 +124,8 @@ button{
 
 <!-- TAB -->
 <div class="tabBar">
-  <button onclick="showPage('home')" id="btnHome">Home</button>
-  <button onclick="showPage('accounts')" id="btnAccounts">Accounts</button>
+  <button onclick="showPage('home')">Home</button>
+  <button onclick="showPage('accounts')">Accounts</button>
 </div>
 
 <!-- HOME -->
@@ -120,6 +145,9 @@ button{
 <button class="start" onclick="start()">Start</button>
 <button class="stop" onclick="stop()">Stop</button>
 <button class="restart" onclick="restart()">Restart</button>
+
+<!-- LOADER -->
+<div id="loaderBar" class="loader-bar" style="display:none;"></div>
 
 <div class="stats">
   <div>Success: <span id="success">0</span></div>
@@ -156,14 +184,10 @@ button{
 
 <script>
 
-/* =========================
-STATE (IMPORTANT FIX)
-========================= */
+/* ================= STATE ================= */
 let selectedAccounts = new Set();
 
-/* =========================
-LOAD ACCOUNTS (NO BUG FIX)
-========================= */
+/* ================= LOAD ACCOUNTS ================= */
 async function loadAccounts(){
   const res = await fetch("/account-status");
   const data = await res.json();
@@ -183,9 +207,7 @@ async function loadAccounts(){
     const row = document.createElement("tr");
 
     row.innerHTML = `
-      <td>
-        <input type="checkbox" class="acc" value="${a.account}" ${checked}>
-      </td>
+      <td><input type="checkbox" class="acc" value="${a.account}" ${checked}></td>
       <td>${a.account}</td>
       <td style="color:${color};font-weight:700">${a.status}</td>
     `;
@@ -193,28 +215,19 @@ async function loadAccounts(){
     tbody.appendChild(row);
   });
 
-  // bind checkbox events
   document.querySelectorAll(".acc").forEach(cb=>{
     cb.onchange = () => {
-      if(cb.checked){
-        selectedAccounts.add(cb.value);
-      } else {
-        selectedAccounts.delete(cb.value);
-      }
+      cb.checked ? selectedAccounts.add(cb.value) : selectedAccounts.delete(cb.value);
     };
   });
 }
 
-/* =========================
-GET ACCOUNTS
-========================= */
+/* ================= GET ACCOUNTS ================= */
 function getAccounts(){
   return [...selectedAccounts];
 }
 
-/* =========================
-EXPORT
-========================= */
+/* ================= EXPORT ================= */
 async function exportMembers(){
   const accounts = getAccounts();
   if(!accounts.length) return alert("Select account");
@@ -228,15 +241,12 @@ async function exportMembers(){
   });
 
   const data = await res.json();
-
   if(data.success){
     document.getElementById("users").value = data.ids.join("\n");
   }
 }
 
-/* =========================
-START (FIXED)
-========================= */
+/* ================= START ================= */
 async function start(){
 
   const accounts = getAccounts();
@@ -247,6 +257,9 @@ async function start(){
   const group = document.getElementById("targetGroup").value;
 
   if(!accounts.length) return alert("No account");
+
+  document.getElementById("loaderBar").style.display = "block";
+  document.getElementById("status").innerText = "Processing...";
 
   const res = await fetch("/start",{
     method:"POST",
@@ -261,51 +274,61 @@ async function start(){
   const data = await res.json();
   document.getElementById("status").innerText = data.message;
 
-  // 🔥 FIX: RESET selection after start
   selectedAccounts.clear();
   loadAccounts();
 }
 
-/* =========================
-STOP / RESTART
-========================= */
+/* ================= STOP ================= */
 async function stop(){
+  document.getElementById("loaderBar").style.display = "none";
+
   const r = await fetch("/stop",{method:"POST"});
   document.getElementById("status").innerText = (await r.json()).message;
 }
 
+/* ================= RESTART ================= */
 async function restart(){
+  document.getElementById("loaderBar").style.display = "none";
+
   await fetch("/restart",{method:"POST"});
+
   document.getElementById("success").innerText = 0;
   document.getElementById("fail").innerText = 0;
   document.getElementById("memberList").innerHTML = "";
+  document.getElementById("status").innerText = "Reset done";
 }
 
-/* =========================
-LIVE STATS (NO ACCOUNT RELOAD BUG)
-========================= */
-setInterval(async()=>{
+/* ================= LIVE UPDATE ================= */
+function live(){
+  setInterval(async()=>{
 
-  const stats = await fetch("/stats").then(r=>r.json());
-  document.getElementById("success").innerText = stats.success;
-  document.getElementById("fail").innerText = stats.fail;
+    const stats = await fetch("/stats").then(r=>r.json());
+    document.getElementById("success").innerText = stats.success;
+    document.getElementById("fail").innerText = stats.fail;
 
-  const logs = await fetch("/member-logs").then(r=>r.json());
+    const logs = await fetch("/member-logs").then(r=>r.json());
 
-  const box = document.getElementById("memberList");
-  box.innerHTML = "";
+    const box = document.getElementById("memberList");
+    box.innerHTML = "";
 
-  logs.slice(-20).forEach(l=>{
-    box.innerHTML += `
-      <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
-    `;
-  });
+    logs.slice(-20).forEach(l=>{
+      box.innerHTML += `
+        <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
+      `;
+    });
 
-},3000);
+    const total = stats.success + stats.fail;
+    const inputTotal = document.getElementById("users").value.split("\n").filter(x=>x.trim()).length;
 
-/* =========================
-PAGE SWITCH
-========================= */
+    if(inputTotal > 0 && total >= inputTotal){
+      document.getElementById("loaderBar").style.display = "none";
+      document.getElementById("status").innerText = "Completed ✅";
+    }
+
+  },2000);
+}
+
+/* ================= PAGE ================= */
 function showPage(p){
   document.getElementById("homePage").style.display = p==="home"?"block":"none";
   document.getElementById("accountsPage").style.display = p==="accounts"?"block":"none";
@@ -314,6 +337,7 @@ function showPage(p){
 /* INIT */
 showPage("home");
 loadAccounts();
+live();
 
 </script>
 
