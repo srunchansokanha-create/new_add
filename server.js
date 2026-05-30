@@ -148,83 +148,88 @@ app.post("/start", async (req, res) => {
 
   if (isRunning) return res.json({ message: "Already running" });
 
-  await refreshAccountStatus();
-
-  const activeAccounts = accounts.filter(
-    a => accountStatus[a] === "ACTIVE"
-  );
-
-  if (!activeAccounts.length)
-    return res.json({ message: "No ACTIVE accounts found" });
+  const active = accounts.filter(a => accountStatus[a] === "ACTIVE");
+  if (!active.length) return res.json({ message: "No ACTIVE accounts" });
 
   isRunning = true;
   stats = { success: 0, fail: 0 };
   logs = [];
+  accountLive = {};
 
-  let uIndex = 0;
-  let aIndex = 0;
+  let i = 0;
+  let acc = 0;
 
-  while (isRunning && uIndex < usernames.length) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-    const accountName = activeAccounts[aIndex];
-    const client = clients[accountName];
-    const username = usernames[uIndex];
+  (async () => {
+    while (isRunning && i < usernames.length) {
 
-    try {
-      await safeConnect(client);
+      const accountName = active[acc];
+      const client = clients[accountName];
+      const user = usernames[i];
 
-      const user = await client.getEntity(username);
-      const groupEntity = await client.getEntity(group);
-
-      await client.invoke(
-        new Api.channels.InviteToChannel({
-          channel: groupEntity,
-          users: [user]
-        })
-      );
-
-      await sleep(2000);
-
-      // REAL VERIFY
-      let ok = false;
       try {
-        await client.invoke(
-          new Api.channels.GetParticipant({
-            channel: groupEntity,
-            participant: user
-          })
-        );
-        ok = true;
-      } catch {
-        ok = false;
-      }
+        await connect(client);
 
-      if (ok) {
+        accountLive[accountName] = `adding ${user}`;
+
+        const entity = await client.getEntity(user);
+
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel: group,
+          users: [entity]
+        }));
+
+        // ✅ SUCCESS → show + DELAY
         stats.success++;
-        logs.push({ username, status: "success" });
-      } else {
-        stats.fail++;
-        logs.push({ username, status: "fail" });
-      }
+        logs.push({
+          username: user,
+          status: "success",
+          account: accountName
+        });
 
-      uIndex++;
+        accountLive[accountName] = `SUCCESS ${user} ⏳ waiting...`;
 
-    } catch (err) {
-      if (err.message?.includes("FLOOD_WAIT")) {
-        aIndex = (aIndex + 1) % activeAccounts.length;
-      } else {
+        await sleep(DELAY);
+
+        i++;
+
+      } catch (err) {
+
+        const msg = err.message || "";
+
+        // ⚠ FLOOD WAIT → skip account immediately
+        if (msg.includes("FLOOD_WAIT")) {
+
+          accountLive[accountName] = "⚠ FLOOD SKIP ACCOUNT";
+
+          acc = (acc + 1) % active.length;
+
+          await sleep(1000); // small switch delay only
+
+          continue;
+        }
+
+        // ❌ FAIL → NO DELAY, skip instantly
         stats.fail++;
-        logs.push({ username, status: "fail" });
-        uIndex++;
+
+        logs.push({
+          username: user,
+          status: "fail",
+          account: accountName
+        });
+
+        accountLive[accountName] = `❌ FAIL ${user}`;
+
+        i++; // move next user immediately
       }
     }
 
-    await sleep(DELAY);
-  }
+    isRunning = false;
+    accountLive = {};
+  })();
 
-  isRunning = false;
-
-  res.json({ message: "Finished" });
+  res.json({ message: "Smart Add Started (No Fail Delay + Auto Flood Skip)" });
 });
 
 /* =========================
