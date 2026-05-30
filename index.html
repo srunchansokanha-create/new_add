@@ -37,6 +37,7 @@ button{
   border-radius:10px;
   cursor:pointer;
   font-weight:600;
+  margin-top:8px;
 }
 
 .start{background:#38bdf8;}
@@ -155,9 +156,14 @@ button{
 
 <script>
 
-/* =====================
-LOAD ACCOUNTS STATUS
-===================== */
+/* =========================
+STATE (IMPORTANT FIX)
+========================= */
+let selectedAccounts = new Set();
+
+/* =========================
+LOAD ACCOUNTS (NO BUG FIX)
+========================= */
 async function loadAccounts(){
   const res = await fetch("/account-status");
   const data = await res.json();
@@ -172,27 +178,43 @@ async function loadAccounts(){
     if(a.status === "ERROR") color = "#ef4444";
     if(a.status === "FLOOD") color = "#f59e0b";
 
-    tbody.innerHTML += `
-      <tr>
-        <td><input type="checkbox" value="${a.account}" class="acc"></td>
-        <td>${a.account}</td>
-        <td style="color:${color};font-weight:700">${a.status}</td>
-      </tr>
+    const checked = selectedAccounts.has(a.account) ? "checked" : "";
+
+    const row = document.createElement("tr");
+
+    row.innerHTML = `
+      <td>
+        <input type="checkbox" class="acc" value="${a.account}" ${checked}>
+      </td>
+      <td>${a.account}</td>
+      <td style="color:${color};font-weight:700">${a.status}</td>
     `;
+
+    tbody.appendChild(row);
+  });
+
+  // bind checkbox events
+  document.querySelectorAll(".acc").forEach(cb=>{
+    cb.onchange = () => {
+      if(cb.checked){
+        selectedAccounts.add(cb.value);
+      } else {
+        selectedAccounts.delete(cb.value);
+      }
+    };
   });
 }
 
-/* =====================
-SELECT ACCOUNTS
-===================== */
+/* =========================
+GET ACCOUNTS
+========================= */
 function getAccounts(){
-  return [...document.querySelectorAll(".acc:checked")]
-    .map(e => e.value);
+  return [...selectedAccounts];
 }
 
-/* =====================
-EXPORT MEMBERS
-===================== */
+/* =========================
+EXPORT
+========================= */
 async function exportMembers(){
   const accounts = getAccounts();
   if(!accounts.length) return alert("Select account");
@@ -212,9 +234,9 @@ async function exportMembers(){
   }
 }
 
-/* =====================
-START
-===================== */
+/* =========================
+START (FIXED)
+========================= */
 async function start(){
 
   const accounts = getAccounts();
@@ -226,31 +248,27 @@ async function start(){
 
   if(!accounts.length) return alert("No account");
 
-  const status = await fetch("/account-status").then(r=>r.json());
-
-  const active = accounts.filter(a =>
-    status.find(x => x.account === a && x.status === "ACTIVE")
-  );
-
-  if(!active.length) return alert("No ACTIVE accounts");
-
   const res = await fetch("/start",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body:JSON.stringify({
       group,
       usernames:users,
-      accounts:active
+      accounts
     })
   });
 
   const data = await res.json();
   document.getElementById("status").innerText = data.message;
+
+  // 🔥 FIX: RESET selection after start
+  selectedAccounts.clear();
+  loadAccounts();
 }
 
-/* =====================
+/* =========================
 STOP / RESTART
-===================== */
+========================= */
 async function stop(){
   const r = await fetch("/stop",{method:"POST"});
   document.getElementById("status").innerText = (await r.json()).message;
@@ -263,12 +281,10 @@ async function restart(){
   document.getElementById("memberList").innerHTML = "";
 }
 
-/* =====================
-LIVE UPDATES
-===================== */
+/* =========================
+LIVE STATS (NO ACCOUNT RELOAD BUG)
+========================= */
 setInterval(async()=>{
-
-  loadAccounts();
 
   const stats = await fetch("/stats").then(r=>r.json());
   document.getElementById("success").innerText = stats.success;
@@ -287,17 +303,16 @@ setInterval(async()=>{
 
 },3000);
 
-/* =====================
+/* =========================
 PAGE SWITCH
-===================== */
+========================= */
 function showPage(p){
   document.getElementById("homePage").style.display = p==="home"?"block":"none";
   document.getElementById("accountsPage").style.display = p==="accounts"?"block":"none";
 }
 
+/* INIT */
 showPage("home");
-
-/* initial load */
 loadAccounts();
 
 </script>
