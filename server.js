@@ -7,35 +7,21 @@ const { StringSession } = require("telegram/sessions");
 const { Api } = require("telegram");
 
 const app = express();
-
 app.use(express.json());
 app.use(cors());
+app.use(express.static(__dirname));
 
-/* =========================
-   CONFIG
-========================= */
 const PORT = process.env.PORT || 3000;
 const DELAY = parseInt(process.env.DELAY_MS) || 30000;
 
-/* =========================
-   SERVE INDEX
-========================= */
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-/* =========================
-   STATE
-========================= */
+/* ================= STATE ================= */
 let clients = {};
 let stats = { success: 0, fail: 0 };
 let logs = [];
 let accountStatus = {};
 let isRunning = false;
 
-/* =========================
-   LOAD ACCOUNTS
-========================= */
+/* ================= LOAD ACCOUNTS ================= */
 for (let i = 1; i <= 10; i++) {
   const apiId = process.env[`API_ID_${i}`];
   const apiHash = process.env[`API_HASH_${i}`];
@@ -51,98 +37,76 @@ for (let i = 1; i <= 10; i++) {
   }
 }
 
-/* =========================
-   HELPERS
-========================= */
+/* ================= HELPERS ================= */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function safeConnect(client) {
-  try {
-    await client.connect();
-  } catch {}
+async function connect(client) {
+  try { await client.connect(); } catch {}
 }
 
-/* =========================
-   ACCOUNT CHECK (FIXED)
-========================= */
-async function checkAccount(name, client) {
-  try {
-    await safeConnect(client);
-
-    const me = await client.getMe();
-
-    if (me && me.id) {
-      accountStatus[name] = "ACTIVE";
-    } else {
-      accountStatus[name] = "ERROR";
-    }
-
-  } catch (err) {
-    if (err.message?.includes("FLOOD_WAIT")) {
-      accountStatus[name] = "FLOOD";
-    } else {
-      accountStatus[name] = "ERROR";
-    }
-  }
-}
-
-/* AUTO CHECK ON START */
+/* ================= FAST ACCOUNT CHECK (CACHE) ================= */
 async function refreshAccountStatus() {
   for (const name of Object.keys(clients)) {
-    await checkAccount(name, clients[name]);
+    try {
+      const client = clients[name];
+      await connect(client);
+
+      const me = await client.getMe();
+      accountStatus[name] = me ? "ACTIVE" : "ERROR";
+
+    } catch (err) {
+      accountStatus[name] =
+        err.message?.includes("FLOOD_WAIT") ? "FLOOD" : "ERROR";
+    }
   }
 }
 
+/* run once every 15 sec (IMPORTANT FIX) */
+setInterval(refreshAccountStatus, 15000);
 refreshAccountStatus();
 
-/* =========================
-   ROUTES
-========================= */
+/* ================= ROUTES ================= */
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
 app.get("/accounts", (req, res) => {
   res.json(Object.keys(clients));
 });
 
-/* LIVE STATUS FIX */
-app.get("/account-status", async (req, res) => {
-  await refreshAccountStatus();
-
+/* ⚡ FAST RESPONSE (NO await inside route) */
+app.get("/account-status", (req, res) => {
   res.json(
     Object.keys(clients).map(name => ({
       account: name,
-      status: accountStatus[name] || "ERROR"
+      status: accountStatus[name] || "UNKNOWN"
     }))
   );
 });
 
-/* MANUAL CHECK */
-app.post("/check-accounts", async (req, res) => {
-  await refreshAccountStatus();
-  res.json({ message: "Account status updated" });
-});
-
-/* EXPORT MEMBERS */
+/* ================= EXPORT ================= */
 app.post("/export-members", async (req, res) => {
   const { account, group } = req.body;
 
   const client = clients[account];
-  if (!client) return res.json({ success: false, error: "Account not found" });
+  if (!client) return res.json({ success: false });
 
   try {
-    await safeConnect(client);
+    await connect(client);
 
-    const participants = await client.getParticipants(group);
-    const ids = participants.map(p => p.username || p.id).filter(Boolean);
+    const members = await client.getParticipants(group);
 
-    res.json({ success: true, ids });
+    res.json({
+      success: true,
+      ids: members.map(m => m.username || m.id).filter(Boolean)
+    });
 
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
 });
 
-/* =========================
-   START (REAL CHECK FIX)
-========================= */
+/* ================= START ENGINE ================= */
 app.post("/start", async (req, res) => {
   const { group, usernames, accounts } = req.body;
 
@@ -150,115 +114,86 @@ app.post("/start", async (req, res) => {
 
   await refreshAccountStatus();
 
-  const activeAccounts = accounts.filter(
-    a => accountStatus[a] === "ACTIVE"
-  );
-
-  if (!activeAccounts.length)
-    return res.json({ message: "No ACTIVE accounts found" });
+  const active = accounts.filter(a => accountStatus[a] === "ACTIVE");
+  if (!active.length) return res.json({ message: "No ACTIVE accounts" });
 
   isRunning = true;
   stats = { success: 0, fail: 0 };
   logs = [];
 
-  let uIndex = 0;
-  let aIndex = 0;
+  let u = 0;
+  let a = 0;
 
-  while (isRunning && uIndex < usernames.length) {
+  (async () => {
+    while (isRunning && u < usernames.length) {
 
-    const accountName = activeAccounts[aIndex];
-    const client = clients[accountName];
-    const username = usernames[uIndex];
+      const accName = active[a];
+      const client = clients[accName];
+      const user = usernames[u];
 
-    try {
-      await safeConnect(client);
-
-      const user = await client.getEntity(username);
-      const groupEntity = await client.getEntity(group);
-
-      await client.invoke(
-        new Api.channels.InviteToChannel({
-          channel: groupEntity,
-          users: [user]
-        })
-      );
-
-      await sleep(2000);
-
-      // REAL VERIFY
-      let ok = false;
       try {
-        await client.invoke(
-          new Api.channels.GetParticipant({
-            channel: groupEntity,
-            participant: user
-          })
-        );
-        ok = true;
-      } catch {
-        ok = false;
-      }
+        await connect(client);
 
-      if (ok) {
+        const entity = await client.getEntity(user);
+
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel: group,
+          users: [entity]
+        }));
+
+        // ✅ SUCCESS → SHOW DELAY ONLY HERE
+        await sleep(2000);
+
         stats.success++;
-        logs.push({ username, status: "success" });
-      } else {
+        logs.push({
+          username: user,
+          account: accName,
+          status: "success"
+        });
+
+        await sleep(DELAY);
+
+      } catch (err) {
+
         stats.fail++;
-        logs.push({ username, status: "fail" });
+        logs.push({
+          username: user,
+          account: accName,
+          status: "fail"
+        });
+
+        // ❌ FAIL = NO DELAY (IMPORTANT FIX)
+        if (err.message?.includes("FLOOD_WAIT")) {
+          a = (a + 1) % active.length;
+        }
       }
 
-      uIndex++;
-
-    } catch (err) {
-      if (err.message?.includes("FLOOD_WAIT")) {
-        aIndex = (aIndex + 1) % activeAccounts.length;
-      } else {
-        stats.fail++;
-        logs.push({ username, status: "fail" });
-        uIndex++;
-      }
+      u++;
     }
 
-    await sleep(DELAY);
-  }
+    isRunning = false;
+  })();
 
-  isRunning = false;
-
-  res.json({ message: "Finished" });
+  res.json({ message: "Started" });
 });
 
-/* =========================
-   STOP / RESTART
-========================= */
+/* ================= STOP ================= */
 app.post("/stop", (req, res) => {
   isRunning = false;
   res.json({ message: "Stopped" });
 });
 
-app.post("/restart", (req, res) => {
-  isRunning = false;
-  stats = { success: 0, fail: 0 };
-  logs = [];
-  res.json({ message: "Restarted" });
-});
-
-/* =========================
-   STATS
-========================= */
+/* ================= STATS ================= */
 app.get("/stats", (req, res) => {
   res.json(stats);
 });
 
-/* =========================
-   LOGS
-========================= */
+/* ================= LOGS ================= */
 app.get("/member-logs", (req, res) => {
   res.json(logs.slice(-500));
 });
 
-/* =========================
-   START SERVER
-========================= */
+/* ================= SERVER ================= */
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("🚀 Server running on", PORT);
 });
