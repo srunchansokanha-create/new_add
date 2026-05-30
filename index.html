@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telegram Add Member Ultimate</title>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:sans-serif;background:#0f172a;color:#fff;display:flex;justify-content:center;padding:30px 10px;}
+
+.container{
+  width:100%;
+  max-width:800px;
+  background:#1e293b;
+  border-radius:20px;
+  padding:25px;
+}
+
+h3{margin:15px 0;color:#a5b4fc;}
+
+input,textarea{
+  width:100%;
+  padding:12px;
+  margin-top:8px;
+  border-radius:10px;
+  border:none;
+  background:#0f172a;
+  color:#fff;
+}
+
+textarea{height:120px;}
+
+button{
+  padding:12px;
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+  font-weight:600;
+}
+
+.start{background:#38bdf8;}
+.stop{background:#ef4444;}
+.restart{background:#f59e0b;}
+
+.stats{
+  display:flex;
+  justify-content:space-around;
+  margin-top:15px;
+  background:#0f172a;
+  padding:10px;
+  border-radius:10px;
+}
+
+.tabBar{
+  display:flex;
+  gap:10px;
+  margin-bottom:15px;
+}
+
+.tabBar button{
+  flex:1;
+  background:#0f172a;
+  color:#fff;
+  border:1px solid #334155;
+}
+
+.tabBar button.active{
+  background:#38bdf8;
+}
+
+.accountsTable{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:10px;
+}
+
+.accountsTable th,
+.accountsTable td{
+  padding:10px;
+  border-bottom:1px solid #334155;
+}
+
+#memberList{
+  margin-top:10px;
+  max-height:200px;
+  overflow:auto;
+  background:#0f172a;
+  padding:10px;
+  border-radius:10px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<!-- TAB -->
+<div class="tabBar">
+  <button onclick="showPage('home')" id="btnHome">Home</button>
+  <button onclick="showPage('accounts')" id="btnAccounts">Accounts</button>
+</div>
+
+<!-- HOME -->
+<div id="homePage">
+
+<h3>Source Group</h3>
+<input id="sourceGroup">
+
+<button class="start" onclick="exportMembers()">Export Members</button>
+
+<h3>Target Group</h3>
+<input id="targetGroup">
+
+<h3>Users</h3>
+<textarea id="users"></textarea>
+
+<button class="start" onclick="start()">Start</button>
+<button class="stop" onclick="stop()">Stop</button>
+<button class="restart" onclick="restart()">Restart</button>
+
+<div class="stats">
+  <div>Success: <span id="success">0</span></div>
+  <div>Fail: <span id="fail">0</span></div>
+</div>
+
+<div id="status"></div>
+
+<h3>Logs</h3>
+<div id="memberList"></div>
+
+</div>
+
+<!-- ACCOUNTS -->
+<div id="accountsPage" style="display:none;">
+
+<h3>Accounts</h3>
+
+<table class="accountsTable">
+<thead>
+<tr>
+<th>Select</th>
+<th>Account</th>
+<th>Status</th>
+</tr>
+</thead>
+
+<tbody id="accountsList"></tbody>
+</table>
+
+</div>
+
+</div>
+
+<script>
+
+/* =====================
+LOAD ACCOUNTS STATUS
+===================== */
+async function loadAccounts(){
+  const res = await fetch("/account-status");
+  const data = await res.json();
+
+  const tbody = document.getElementById("accountsList");
+  tbody.innerHTML = "";
+
+  data.forEach(a => {
+
+    let color = "#38bdf8";
+    if(a.status === "ACTIVE") color = "#22c55e";
+    if(a.status === "ERROR") color = "#ef4444";
+    if(a.status === "FLOOD") color = "#f59e0b";
+
+    tbody.innerHTML += `
+      <tr>
+        <td><input type="checkbox" value="${a.account}" class="acc"></td>
+        <td>${a.account}</td>
+        <td style="color:${color};font-weight:700">${a.status}</td>
+      </tr>
+    `;
+  });
+}
+
+/* =====================
+SELECT ACCOUNTS
+===================== */
+function getAccounts(){
+  return [...document.querySelectorAll(".acc:checked")]
+    .map(e => e.value);
+}
+
+/* =====================
+EXPORT MEMBERS
+===================== */
+async function exportMembers(){
+  const accounts = getAccounts();
+  if(!accounts.length) return alert("Select account");
+
+  const group = document.getElementById("sourceGroup").value;
+
+  const res = await fetch("/export-members",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({ account:accounts[0], group })
+  });
+
+  const data = await res.json();
+
+  if(data.success){
+    document.getElementById("users").value = data.ids.join("\n");
+  }
+}
+
+/* =====================
+START
+===================== */
+async function start(){
+
+  const accounts = getAccounts();
+  const users = document.getElementById("users").value
+    .split("\n")
+    .filter(x => x.trim());
+
+  const group = document.getElementById("targetGroup").value;
+
+  if(!accounts.length) return alert("No account");
+
+  const status = await fetch("/account-status").then(r=>r.json());
+
+  const active = accounts.filter(a =>
+    status.find(x => x.account === a && x.status === "ACTIVE")
+  );
+
+  if(!active.length) return alert("No ACTIVE accounts");
+
+  const res = await fetch("/start",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      group,
+      usernames:users,
+      accounts:active
+    })
+  });
+
+  const data = await res.json();
+  document.getElementById("status").innerText = data.message;
+}
+
+/* =====================
+STOP / RESTART
+===================== */
+async function stop(){
+  const r = await fetch("/stop",{method:"POST"});
+  document.getElementById("status").innerText = (await r.json()).message;
+}
+
+async function restart(){
+  await fetch("/restart",{method:"POST"});
+  document.getElementById("success").innerText = 0;
+  document.getElementById("fail").innerText = 0;
+  document.getElementById("memberList").innerHTML = "";
+}
+
+/* =====================
+LIVE UPDATES
+===================== */
+setInterval(async()=>{
+
+  loadAccounts();
+
+  const stats = await fetch("/stats").then(r=>r.json());
+  document.getElementById("success").innerText = stats.success;
+  document.getElementById("fail").innerText = stats.fail;
+
+  const logs = await fetch("/member-logs").then(r=>r.json());
+
+  const box = document.getElementById("memberList");
+  box.innerHTML = "";
+
+  logs.slice(-20).forEach(l=>{
+    box.innerHTML += `
+      <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
+    `;
+  });
+
+},3000);
+
+/* =====================
+PAGE SWITCH
+===================== */
+function showPage(p){
+  document.getElementById("homePage").style.display = p==="home"?"block":"none";
+  document.getElementById("accountsPage").style.display = p==="accounts"?"block":"none";
+}
+
+showPage("home");
+
+/* initial load */
+loadAccounts();
+
+</script>
+
+</body>
+</html>
