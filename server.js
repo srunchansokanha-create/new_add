@@ -102,17 +102,10 @@ app.post("/export-members", async (req, res) => {
 
     const members = await client.getParticipants(group);
 
+    // ✅ ONLY USERS WITH USERNAME
     const users = members
-      .filter(m =>
-        m.username &&
-        m.username.trim() !== ""
-      )
-      .map(m => ({
-        id: m.id,
-        username: m.username,
-        firstName: m.firstName || "",
-        lastName: m.lastName || ""
-      }));
+      .filter(m => m.username && m.username.trim() !== "")
+      .map(m => m.username);
 
     res.json({
       success: true,
@@ -121,12 +114,10 @@ app.post("/export-members", async (req, res) => {
     });
 
   } catch (err) {
-
     res.json({
       success: false,
       error: err.message
     });
-
   }
 });
 
