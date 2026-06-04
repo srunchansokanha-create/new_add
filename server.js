@@ -16,7 +16,7 @@ const DELAY = parseInt(process.env.DELAY_MS) || 30000;
 
 /* ================= STATE ================= */
 let clients = {};
-let stats = { success: 0, fail: 0, processed: 0 };
+let stats = { success: 0, fail: 0 };
 let logs = [];
 let accountStatus = {};
 let isRunning = false;
@@ -44,20 +44,7 @@ async function connect(client) {
   try { await client.connect(); } catch {}
 }
 
-/* ================= LOG LIMIT (FIX RAM LEAK) ================= */
-function addLog(data) {
-  logs.push({
-    username: data.username || "unknown",
-    account: data.account || "unknown",
-    status: data.status || "unknown",
-    error: data.error || null,
-    time: new Date().toISOString()
-  });
-
-  if (logs.length > 500) logs.shift();
-}
-
-/* ================= ACCOUNT STATUS ================= */
+/* ================= FAST ACCOUNT CHECK (CACHE) ================= */
 async function refreshAccountStatus() {
   for (const name of Object.keys(clients)) {
     try {
@@ -65,14 +52,16 @@ async function refreshAccountStatus() {
       await connect(client);
 
       const me = await client.getMe();
-      accountStatus[name] = me && me.id ? "ACTIVE" : "ERROR";
+      accountStatus[name] = me ? "ACTIVE" : "ERROR";
 
     } catch (err) {
-      accountStatus[name] = "ERROR";
+      accountStatus[name] =
+        err.message?.includes("FLOOD_WAIT") ? "FLOOD" : "ERROR";
     }
   }
 }
 
+/* run once every 15 sec (IMPORTANT FIX) */
 setInterval(refreshAccountStatus, 15000);
 refreshAccountStatus();
 
@@ -85,6 +74,7 @@ app.get("/accounts", (req, res) => {
   res.json(Object.keys(clients));
 });
 
+/* ⚡ FAST RESPONSE (NO await inside route) */
 app.get("/account-status", (req, res) => {
   res.json(
     Object.keys(clients).map(name => ({
@@ -94,53 +84,28 @@ app.get("/account-status", (req, res) => {
   );
 });
 
-/* ================= EXPORT MEMBERS (USERNAME ONLY FIX) ================= */
+/* ================= EXPORT ================= */
 app.post("/export-members", async (req, res) => {
   const { account, group } = req.body;
 
   const client = clients[account];
-
-  if (!client) {
-    return res.json({ success: false, error: "Account not found" });
-  }
+  if (!client) return res.json({ success: false });
 
   try {
     await connect(client);
 
     const members = await client.getParticipants(group);
 
-    const users = members
-      .filter(m => m.username && m.username.trim() !== "")
-      .map(m => m.username);
-
     res.json({
       success: true,
-      total: users.length,
-      users
+      ids: members.map(m => m.username || m.id).filter(Boolean)
     });
 
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
 });
-async function safeJSON(url, options){
-  try {
-    const res = await fetch(url, options);
 
-    const text = await res.text();
-
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      console.error("NOT JSON:", text);
-      return null;
-    }
-
-  } catch (err) {
-    console.error("FETCH FAIL:", err);
-    return null;
-  }
-}
 /* ================= START ENGINE ================= */
 app.post("/start", async (req, res) => {
   const { group, usernames, accounts } = req.body;
@@ -149,11 +114,11 @@ app.post("/start", async (req, res) => {
 
   await refreshAccountStatus();
 
-  const active = (accounts || []).filter(a => accountStatus[a] === "ACTIVE");
+  const active = accounts.filter(a => accountStatus[a] === "ACTIVE");
   if (!active.length) return res.json({ message: "No ACTIVE accounts" });
 
   isRunning = true;
-  stats = { success: 0, fail: 0, processed: 0 };
+  stats = { success: 0, fail: 0 };
   logs = [];
 
   let u = 0;
@@ -163,39 +128,24 @@ app.post("/start", async (req, res) => {
     while (isRunning && u < usernames.length) {
 
       const accName = active[a];
-
-      if (!accName) break;
-
       const client = clients[accName];
       const user = usernames[u];
 
       try {
         await connect(client);
 
-        let entity;
-        try {
-          entity = await client.getEntity(user);
-        } catch {
-          addLog({
-            username: user,
-            account: accName,
-            status: "fail",
-            error: "INVALID_USER"
-          });
-          stats.fail++;
-          u++;
-          continue;
-        }
+        const entity = await client.getEntity(user);
 
         await client.invoke(new Api.channels.InviteToChannel({
           channel: group,
           users: [entity]
         }));
 
-        stats.success++;
-        stats.processed++;
+        // ✅ SUCCESS → SHOW DELAY ONLY HERE
+        await sleep(2000);
 
-        addLog({
+        stats.success++;
+        logs.push({
           username: user,
           account: accName,
           status: "success"
@@ -206,19 +156,15 @@ app.post("/start", async (req, res) => {
       } catch (err) {
 
         stats.fail++;
-        stats.processed++;
-
-        addLog({
+        logs.push({
           username: user,
           account: accName,
-          status: "fail",
-          error: err.message
+          status: "fail"
         });
 
+        // ❌ FAIL = NO DELAY (IMPORTANT FIX)
         if (err.message?.includes("FLOOD_WAIT")) {
-          if (active.length > 0) {
-            a = (a + 1) % active.length;
-          }
+          a = (a + 1) % active.length;
         }
       }
 
@@ -244,7 +190,7 @@ app.get("/stats", (req, res) => {
 
 /* ================= LOGS ================= */
 app.get("/member-logs", (req, res) => {
-  res.json(logs.slice(-50));
+  res.json(logs.slice(-500));
 });
 
 /* ================= SERVER ================= */
