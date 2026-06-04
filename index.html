@@ -91,7 +91,7 @@ button{
   border-radius:10px;
 }
 
-/* LOADER */
+/* loader */
 .loader-bar{
   height:4px;
   width:100%;
@@ -187,13 +187,24 @@ button{
 
 <script>
 
-/* ================= KEEP SELECT STATE FIX ================= */
 let selectedAccounts = new Set();
+
+/* ================= SAFE FETCH ================= */
+async function safeJSON(url){
+  try{
+    const res = await fetch(url);
+    const text = await res.text();
+    return JSON.parse(text);
+  }catch(e){
+    console.error("JSON error:", e);
+    return null;
+  }
+}
 
 /* ================= LOAD ACCOUNTS ================= */
 async function loadAccounts(){
-  const res = await fetch("/account-status");
-  const data = await res.json();
+  const data = await safeJSON("/account-status");
+  if(!data) return;
 
   const tbody = document.getElementById("accountsList");
   tbody.innerHTML = "";
@@ -205,12 +216,14 @@ async function loadAccounts(){
     if(a.status==="ERROR") color="#ef4444";
     if(a.status==="FLOOD") color="#f59e0b";
 
-    const checked = selectedAccounts.has(a.account) ? "checked" : "";
+    const checked = selectedAccounts.has(a.account);
 
     const tr = document.createElement("tr");
-
     tr.innerHTML = `
-      <td><input type="checkbox" class="acc" value="${a.account}" ${checked}></td>
+      <td>
+        <input type="checkbox" class="acc"
+        value="${a.account}" ${checked ? "checked" : ""}>
+      </td>
       <td>${a.account}</td>
       <td style="color:${color};font-weight:700">${a.status}</td>
     `;
@@ -235,14 +248,16 @@ function getAccounts(){
 async function exportMembers(){
 
   const accounts = getAccounts();
-  if(!accounts.length) return alert("Select account");
+  if(!accounts.length){
+    document.getElementById("status").innerText="Select account";
+    return;
+  }
 
   const group = document.getElementById("sourceGroup").value;
 
-  // 🔥 SHOW LOADING
-  document.getElementById("exportLoading").style.display = "block";
+  document.getElementById("exportLoading").style.display="block";
 
-  const res = await fetch("/export-members",{
+  const data = await safeJSON("/export-members",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body:JSON.stringify({
@@ -251,18 +266,15 @@ async function exportMembers(){
     })
   });
 
-  const data = await res.json();
+  document.getElementById("exportLoading").style.display="none";
 
-  // 🔥 HIDE LOADING
-  document.getElementById("exportLoading").style.display = "none";
-
-  if(data.success){
-    document.getElementById("users").value = data.ids.join("\n");
+  if(data && data.success){
+    document.getElementById("users").value = data.users.join("\n");
     document.getElementById("status").innerText =
-      `Exported ${data.ids.length} members`;
+      `Exported ${data.total} members`;
   } else {
     document.getElementById("status").innerText =
-      `Error: ${data.error}`;
+      "Export failed";
   }
 }
 
@@ -276,7 +288,10 @@ async function start(){
 
   const group = document.getElementById("targetGroup").value;
 
-  if(!accounts.length) return alert("No account");
+  if(!accounts.length){
+    document.getElementById("status").innerText="Select account";
+    return;
+  }
 
   document.getElementById("loaderBar").style.display="block";
   document.getElementById("status").innerText="Running...";
@@ -299,35 +314,44 @@ async function start(){
 async function stop(){
   document.getElementById("loaderBar").style.display="none";
   const r = await fetch("/stop",{method:"POST"});
-  document.getElementById("status").innerText=(await r.json()).message;
+  const d = await r.json();
+  document.getElementById("status").innerText=d.message;
 }
 
 /* ================= RESTART ================= */
 async function restart(){
+
   document.getElementById("loaderBar").style.display="none";
-  await fetch("/restart",{method:"POST"});
-  document.getElementById("success").innerText=0;
-  document.getElementById("fail").innerText=0;
+
+  document.getElementById("success").innerText="0";
+  document.getElementById("fail").innerText="0";
   document.getElementById("memberList").innerHTML="";
+  document.getElementById("status").innerText="Reset";
+
   selectedAccounts.clear();
+  loadAccounts();
 }
 
-/* ================= LIVE ================= */
+/* ================= LIVE SAFE ================= */
 setInterval(async()=>{
 
-  const stats = await fetch("/stats").then(r=>r.json());
-  document.getElementById("success").innerText=stats.success;
-  document.getElementById("fail").innerText=stats.fail;
+  const stats = await safeJSON("/stats");
+  if(stats){
+    document.getElementById("success").innerText=stats.success;
+    document.getElementById("fail").innerText=stats.fail;
+  }
 
-  const logs = await fetch("/member-logs").then(r=>r.json());
+  const logs = await safeJSON("/member-logs");
+  if(!logs) return;
 
   const box = document.getElementById("memberList");
   box.innerHTML="";
 
   logs.slice(-20).forEach(l=>{
-    box.innerHTML+=`
-      <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
-    `;
+    const div = document.createElement("div");
+    div.textContent =
+      `${l.status==="success"?"✅":"❌"} ${l.username}`;
+    box.appendChild(div);
   });
 
 },2000);
