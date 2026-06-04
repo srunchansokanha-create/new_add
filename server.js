@@ -85,42 +85,52 @@ app.get("/account-status", (req, res) => {
 });
 
 /* ================= EXPORT ================= */
-app.post("/export-members", async (req, res) => {
-  const { account, group } = req.body;
+async function exportMembers(){
 
-  const client = clients[account];
+  try{
 
-  if (!client) {
-    return res.json({
-      success: false,
-      error: "Account not found"
+    const accounts = getAccounts();
+    if(!accounts.length) return alert("Select account");
+
+    const group = document.getElementById("sourceGroup").value;
+
+    document.getElementById("exportLoading").style.display="block";
+
+    const res = await fetch("/export-members",{
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        account:accounts[0],
+        group
+      })
     });
+
+    const data = await res.json();
+
+    if(data.success){
+
+      document.getElementById("users").value =
+        data.users.join("\n");
+
+      document.getElementById("status").innerText =
+        `Exported ${data.total} members`;
+
+    } else {
+      document.getElementById("status").innerText =
+        `Error: ${data.error}`;
+    }
+
+  }catch(err){
+
+    document.getElementById("status").innerText =
+      err.message;
+
+  }finally{
+
+    document.getElementById("exportLoading").style.display="none";
+
   }
-
-  try {
-    await connect(client);
-
-    const members = await client.getParticipants(group);
-
-    // ✅ ONLY USERS WITH USERNAME
-    const users = members
-      .filter(m => m.username && m.username.trim() !== "")
-      .map(m => m.username);
-
-    res.json({
-      success: true,
-      total: users.length,
-      users
-    });
-
-  } catch (err) {
-    res.json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
+}
 /* ================= START ENGINE ================= */
 app.post("/start", async (req, res) => {
   const { group, usernames, accounts } = req.body;
