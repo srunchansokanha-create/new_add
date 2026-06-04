@@ -124,85 +124,55 @@ app.post("/start", async (req, res) => {
   let u = 0;
   let a = 0;
 
-(async () => {
-  while (isRunning && u < usernames.length) {
+  (async () => {
+    while (isRunning && u < usernames.length) {
 
-    const accName = active[a];
-    const client = clients[accName];
-
-    // format: id|access_hash|username
-    const [id, accessHash, username] = usernames[u].split("|");
-
-    try {
-      await connect(client);
-
-      const entity = {
-        className: "InputUser",
-        userId: BigInt(id),
-        accessHash: BigInt(accessHash)
-      };
-
-      // 1️⃣ ADD MEMBER
-      await client.invoke(new Api.channels.InviteToChannel({
-        channel: group,
-        users: [entity]
-      }));
-
-      await sleep(3000);
-
-      // 2️⃣ VERIFY MEMBER JOINED
-      let isJoined = false;
+      const accName = active[a];
+      const client = clients[accName];
+      const user = usernames[u];
 
       try {
-        await client.invoke(new Api.channels.GetParticipant({
+        await connect(client);
+
+        const entity = await client.getEntity(user);
+
+        await client.invoke(new Api.channels.InviteToChannel({
           channel: group,
-          participant: entity
+          users: [entity]
         }));
 
-        isJoined = true;
-      } catch (e) {
-        isJoined = false;
-      }
+        // ✅ SUCCESS → SHOW DELAY ONLY HERE
+        await sleep(2000);
 
-      // 3️⃣ ONLY THEN SUCCESS
-      if (isJoined) {
         stats.success++;
         logs.push({
-          username: username || id,
+          username: user,
           account: accName,
           status: "success"
         });
-      } else {
+
+        await sleep(DELAY);
+
+      } catch (err) {
+
         stats.fail++;
         logs.push({
-          username: username || id,
+          username: user,
           account: accName,
-          status: "fail (not joined)"
+          status: "fail"
         });
+
+        // ❌ FAIL = NO DELAY (IMPORTANT FIX)
+        if (err.message?.includes("FLOOD_WAIT")) {
+          a = (a + 1) % active.length;
+        }
       }
 
-      await sleep(DELAY);
-
-    } catch (err) {
-
-      stats.fail++;
-      logs.push({
-        username: username || id,
-        account: accName,
-        status: "fail"
-      });
-
-      if (err.message?.includes("FLOOD_WAIT")) {
-        const wait = err.seconds || 5;
-        await sleep(wait * 1000);
-      }
+      u++;
     }
 
-    u++;
-  }
-
-  isRunning = false;
-})();
+    isRunning = false;
+  })();
 
   res.json({ message: "Started" });
 });
