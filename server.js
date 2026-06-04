@@ -89,20 +89,44 @@ app.post("/export-members", async (req, res) => {
   const { account, group } = req.body;
 
   const client = clients[account];
-  if (!client) return res.json({ success: false });
+
+  if (!client) {
+    return res.json({
+      success: false,
+      error: "Account not found"
+    });
+  }
 
   try {
     await connect(client);
 
     const members = await client.getParticipants(group);
 
+    const users = members
+      .filter(m =>
+        m.username &&
+        m.username.trim() !== ""
+      )
+      .map(m => ({
+        id: m.id,
+        username: m.username,
+        firstName: m.firstName || "",
+        lastName: m.lastName || ""
+      }));
+
     res.json({
       success: true,
-      ids: members.map(m => m.username || m.id).filter(Boolean)
+      total: users.length,
+      users
     });
 
   } catch (err) {
-    res.json({ success: false, error: err.message });
+
+    res.json({
+      success: false,
+      error: err.message
+    });
+
   }
 });
 
