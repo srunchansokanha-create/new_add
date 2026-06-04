@@ -96,14 +96,17 @@ app.post("/export-members", async (req, res) => {
 
     const members = await client.getParticipants(group);
 
-    // ✅ ONLY USERS WITH USERNAME
-    const usernames = members
-      .filter(m => m.username && m.username.trim() !== "")
-      .map(m => "@" + m.username); // optional @ prefix
+    const data = members
+      .filter(m => m.id && m.accessHash) // important
+      .map(m => ({
+        id: m.id,
+        access_hash: m.accessHash,
+        username: m.username ? "@" + m.username : null
+      }));
 
     res.json({
       success: true,
-      ids: usernames
+      users: data
     });
 
   } catch (err) {
@@ -129,55 +132,85 @@ app.post("/start", async (req, res) => {
   let u = 0;
   let a = 0;
 
-  (async () => {
-    while (isRunning && u < usernames.length) {
+(async () => {
+  while (isRunning && u < usernames.length) {
 
-      const accName = active[a];
-      const client = clients[accName];
-      const user = usernames[u];
+    const accName = active[a];
+    const client = clients[accName];
+
+    // format: id|access_hash|username
+    const [id, accessHash, username] = usernames[u].split("|");
+
+    try {
+      await connect(client);
+
+      const entity = {
+        className: "InputUser",
+        userId: BigInt(id),
+        accessHash: BigInt(accessHash)
+      };
+
+      // 1️⃣ ADD MEMBER
+      await client.invoke(new Api.channels.InviteToChannel({
+        channel: group,
+        users: [entity]
+      }));
+
+      await sleep(3000);
+
+      // 2️⃣ VERIFY MEMBER JOINED
+      let isJoined = false;
 
       try {
-        await connect(client);
-
-        const entity = await client.getEntity(user);
-
-        await client.invoke(new Api.channels.InviteToChannel({
+        await client.invoke(new Api.channels.GetParticipant({
           channel: group,
-          users: [entity]
+          participant: entity
         }));
 
-        // ✅ SUCCESS → SHOW DELAY ONLY HERE
-        await sleep(2000);
+        isJoined = true;
+      } catch (e) {
+        isJoined = false;
+      }
 
+      // 3️⃣ ONLY THEN SUCCESS
+      if (isJoined) {
         stats.success++;
         logs.push({
-          username: user,
+          username: username || id,
           account: accName,
           status: "success"
         });
-
-        await sleep(DELAY);
-
-      } catch (err) {
-
+      } else {
         stats.fail++;
         logs.push({
-          username: user,
+          username: username || id,
           account: accName,
-          status: "fail"
+          status: "fail (not joined)"
         });
-
-        // ❌ FAIL = NO DELAY (IMPORTANT FIX)
-        if (err.message?.includes("FLOOD_WAIT")) {
-          a = (a + 1) % active.length;
-        }
       }
 
-      u++;
+      await sleep(DELAY);
+
+    } catch (err) {
+
+      stats.fail++;
+      logs.push({
+        username: username || id,
+        account: accName,
+        status: "fail"
+      });
+
+      if (err.message?.includes("FLOOD_WAIT")) {
+        const wait = err.seconds || 5;
+        await sleep(wait * 1000);
+      }
     }
 
-    isRunning = false;
-  })();
+    u++;
+  }
+
+  isRunning = false;
+})();
 
   res.json({ message: "Started" });
 });
