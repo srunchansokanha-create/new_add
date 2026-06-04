@@ -123,7 +123,24 @@ app.post("/export-members", async (req, res) => {
     res.json({ success: false, error: err.message });
   }
 });
+async function safeJSON(url, options){
+  try {
+    const res = await fetch(url, options);
 
+    const text = await res.text();
+
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      console.error("NOT JSON:", text);
+      return null;
+    }
+
+  } catch (err) {
+    console.error("FETCH FAIL:", err);
+    return null;
+  }
+}
 /* ================= START ENGINE ================= */
 app.post("/start", async (req, res) => {
   const { group, usernames, accounts } = req.body;
