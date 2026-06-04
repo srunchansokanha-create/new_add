@@ -89,24 +89,16 @@ app.post("/export-members", async (req, res) => {
   const { account, group } = req.body;
 
   const client = clients[account];
-  if (!client) return res.json({ success: false, error: "Invalid account" });
+  if (!client) return res.json({ success: false });
 
   try {
     await connect(client);
 
     const members = await client.getParticipants(group);
 
-    const data = members
-      .filter(m => m.id && m.accessHash) // important
-      .map(m => ({
-        id: m.id,
-        access_hash: m.accessHash,
-        username: m.username ? "@" + m.username : null
-      }));
-
     res.json({
       success: true,
-      users: data
+      ids: members.map(m => m.username || m.id).filter(Boolean)
     });
 
   } catch (err) {
