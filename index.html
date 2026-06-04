@@ -1,355 +1,229 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Telegram Add Member Ultimate</title>
+require("dotenv").config();
+const express = require("express");
+const path = require("path");
+const cors = require("cors");
+const { TelegramClient } = require("telegram");
+const { StringSession } = require("telegram/sessions");
+const { Api } = require("telegram");
 
-<style>
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:sans-serif;background:#0f172a;color:#fff;display:flex;justify-content:center;padding:30px 10px;}
+const app = express();
+app.use(express.json());
+app.use(cors());
+app.use(express.static(__dirname));
 
-.container{
-  width:100%;
-  max-width:800px;
-  background:#1e293b;
-  border-radius:20px;
-  padding:25px;
-}
+const PORT = process.env.PORT || 3000;
+const DELAY = parseInt(process.env.DELAY_MS) || 30000;
 
-h3{margin:15px 0;color:#a5b4fc;}
-
-input,textarea{
-  width:100%;
-  padding:12px;
-  margin-top:8px;
-  border-radius:10px;
-  border:none;
-  background:#0f172a;
-  color:#fff;
-}
-
-textarea{height:120px;}
-
-button{
-  padding:12px;
-  border:none;
-  border-radius:10px;
-  cursor:pointer;
-  font-weight:900;
-  margin-top:8px;
-}
-
-.start{background:#38bdf8;}
-.stop{background:#ef4444;}
-.restart{background:#f59e0b;}
-
-.stats{
-  display:flex;
-  justify-content:space-around;
-  margin-top:15px;
-  background:#0f172a;
-  padding:10px;
-  border-radius:10px;
-}
-
-.tabBar{
-  display:flex;
-  gap:10px;
-  margin-bottom:15px;
-}
-
-.tabBar button{
-  flex:1;
-  background:#06a4c0;
-  color:#fff;
-  border:1px solid #334155;
-}
-
-.tabBar button.active{
-  background:#999c9e;
-}
-
-.accountsTable{
-  width:100%;
-  border-collapse:collapse;
-  margin-top:10px;
-}
-
-.accountsTable th,
-.accountsTable td{
-  padding:10px;
-  border-bottom:1px solid #334155;
-}
-
-#memberList{
-  margin-top:10px;
-  max-height:200px;
-  overflow:auto;
-  background:#0f172a;
-  padding:10px;
-  border-radius:10px;
-}
-
-/* LOADER */
-.loader-bar{
-  height:4px;
-  width:100%;
-  margin-top:15px;
-  border-radius:10px;
-  background:#0f172a;
-  overflow:hidden;
-  position:relative;
-  display:none;
-}
-
-.loader-bar::before{
-  content:"";
-  position:absolute;
-  height:100%;
-  width:40%;
-  background:linear-gradient(90deg,transparent,#38bdf8,transparent);
-  animation:move 1s linear infinite;
-}
-
-@keyframes move{
-  0%{left:-40%}
-  100%{left:100%}
-}
-</style>
-</head>
-
-<body>
-
-<div class="container">
-
-<div class="tabBar">
-  <button onclick="showPage('home')">Home</button>
-  <button onclick="showPage('accounts')">Accounts</button>
-</div>
-
-<!-- HOME -->
-<div id="homePage">
-
-<h3>Source Group</h3>
-<input id="sourceGroup">
-
-<button class="start" onclick="exportMembers()">Export Members</button>
-
-<div id="exportLoading" style="display:none;margin-top:10px;color:#38bdf8;">
-  ⏳ Exporting members...
-</div>
-
-<h3>Target Group</h3>
-<input id="targetGroup">
-
-<h3>Users</h3>
-<textarea id="users"></textarea>
-
-<button class="start" onclick="start()">Start</button>
-
-
-<div id="loaderBar" class="loader-bar"></div>
-
-
-<div class="stats">
-  <div>Success: <span id="success">0</span></div>
-  <div>Fail: <span id="fail">0</span></div>
-</div>
-<button class="stop" onclick="stop()">Stop</button>
-<button class="restart" onclick="restart()">Restart</button>
-<div id="status"></div>
-
-<h3>Logs</h3>
-<div id="memberList"></div>
-
-</div>
-
-<!-- ACCOUNTS -->
-<div id="accountsPage" style="display:none;">
-
-<h3>Accounts</h3>
-
-<table class="accountsTable">
-<thead>
-<tr>
-<th>Select</th>
-<th>Account</th>
-<th>Status</th>
-</tr>
-</thead>
-
-<tbody id="accountsList"></tbody>
-</table>
-
-</div>
-
-</div>
-
-<script>
-
-/* ================= KEEP SELECT STATE FIX ================= */
-let selectedAccounts = new Set();
+/* ================= STATE ================= */
+let clients = {};
+let stats = { success: 0, fail: 0 };
+let logs = [];
+let accountStatus = {};
+let isRunning = false;
 
 /* ================= LOAD ACCOUNTS ================= */
-async function loadAccounts(){
-  const res = await fetch("/account-status");
-  const data = await res.json();
+for (let i = 1; i <= 10; i++) {
+  const apiId = process.env[`API_ID_${i}`];
+  const apiHash = process.env[`API_HASH_${i}`];
+  const session = process.env[`SESSION_${i}`];
 
-  const tbody = document.getElementById("accountsList");
-  tbody.innerHTML = "";
-
-  data.forEach(a => {
-
-    let color = "#38bdf8";
-    if(a.status==="ACTIVE") color="#22c55e";
-    if(a.status==="ERROR") color="#ef4444";
-    if(a.status==="FLOOD") color="#f59e0b";
-
-    const checked = selectedAccounts.has(a.account) ? "checked" : "";
-
-    const tr = document.createElement("tr");
-
-    tr.innerHTML = `
-      <td><input type="checkbox" class="acc" value="${a.account}" ${checked}></td>
-      <td>${a.account}</td>
-      <td style="color:${color};font-weight:700">${a.status}</td>
-    `;
-
-    tbody.appendChild(tr);
-  });
-
-  document.querySelectorAll(".acc").forEach(cb=>{
-    cb.onchange = () => {
-      if(cb.checked) selectedAccounts.add(cb.value);
-      else selectedAccounts.delete(cb.value);
-    };
-  });
+  if (apiId && apiHash && session) {
+    clients[`account${i}`] = new TelegramClient(
+      new StringSession(session),
+      parseInt(apiId),
+      apiHash,
+      { connectionRetries: 5 }
+    );
+  }
 }
 
-/* ================= GET ACCOUNTS ================= */
-function getAccounts(){
-  return [...selectedAccounts];
+/* ================= HELPERS ================= */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function connect(client) {
+  try { await client.connect(); } catch {}
 }
+
+/* ================= FAST ACCOUNT CHECK (CACHE) ================= */
+async function refreshAccountStatus() {
+  for (const name of Object.keys(clients)) {
+    try {
+      const client = clients[name];
+      await connect(client);
+
+      const me = await client.getMe();
+      accountStatus[name] = me ? "ACTIVE" : "ERROR";
+
+    } catch (err) {
+      accountStatus[name] =
+        err.message?.includes("FLOOD_WAIT") ? "FLOOD" : "ERROR";
+    }
+  }
+}
+
+/* run once every 15 sec (IMPORTANT FIX) */
+setInterval(refreshAccountStatus, 15000);
+refreshAccountStatus();
+
+/* ================= ROUTES ================= */
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/accounts", (req, res) => {
+  res.json(Object.keys(clients));
+});
+
+/* ⚡ FAST RESPONSE (NO await inside route) */
+app.get("/account-status", (req, res) => {
+  res.json(
+    Object.keys(clients).map(name => ({
+      account: name,
+      status: accountStatus[name] || "UNKNOWN"
+    }))
+  );
+});
 
 /* ================= EXPORT ================= */
-async function exportMembers(){
+app.post("/export-members", async (req, res) => {
+  const { account, group } = req.body;
 
-  const accounts = getAccounts();
-  if(!accounts.length) return alert("Select account");
+  const client = clients[account];
+  if (!client) return res.json({ success: false });
 
-  const group = document.getElementById("sourceGroup").value;
+  try {
+    await connect(client);
 
-  // 🔥 SHOW LOADING
-  document.getElementById("exportLoading").style.display = "block";
+    const members = await client.getParticipants(group);
 
-  const res = await fetch("/export-members",{
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({
-      account:accounts[0],
-      group
-    })
-  });
+    res.json({
+      success: true,
+      ids: members.map(m => m.username || m.id).filter(Boolean)
+    });
 
-  const data = await res.json();
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
 
-  // 🔥 HIDE LOADING
-  document.getElementById("exportLoading").style.display = "none";
+/* ================= START ENGINE ================= */
+app.post("/start", async (req, res) => {
+  const { group, usernames, accounts } = req.body;
 
- if(data.success){
+  if (isRunning) return res.json({ message: "Already running" });
 
-  document.getElementById("users").value =
-    data.users.map(u =>
-      `${u.id}|${u.access_hash}|${u.username || ""}`
-    ).join("\n");
+  await refreshAccountStatus();
 
-  document.getElementById("status").innerText =
-    `Exported ${data.users.length} members`;
+  const active = accounts.filter(a => accountStatus[a] === "ACTIVE");
+  if (!active.length) return res.json({ message: "No ACTIVE accounts" });
 
-} else {
-  document.getElementById("status").innerText =
-    `Error: ${data.error}`;
-}
-}
+  isRunning = true;
+  stats = { success: 0, fail: 0 };
+  logs = [];
 
-/* ================= START ================= */
-async function start(){
+  let u = 0;
+  let a = 0;
 
-  const accounts = getAccounts();
-  const users = document.getElementById("users").value
-    .split("\n")
-    .filter(x=>x.trim());
+(async () => {
+  while (isRunning && u < usernames.length) {
 
-  const group = document.getElementById("targetGroup").value;
+    const accName = active[a];
+    const client = clients[accName];
 
-  if(!accounts.length) return alert("No account");
+    // format: id|access_hash|username
+    const [id, accessHash, username] = usernames[u].split("|");
 
-  document.getElementById("loaderBar").style.display="block";
-  document.getElementById("status").innerText="Running...";
+    try {
+      await connect(client);
 
-  const res = await fetch("/start",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      group,
-      usernames:users,
-      accounts
-    })
-  });
+      const entity = {
+        className: "InputUser",
+        userId: BigInt(id),
+        accessHash: BigInt(accessHash)
+      };
 
-  const data = await res.json();
-  document.getElementById("status").innerText=data.message;
-}
+      // 1️⃣ ADD MEMBER
+      await client.invoke(new Api.channels.InviteToChannel({
+        channel: group,
+        users: [entity]
+      }));
+
+      await sleep(3000);
+
+      // 2️⃣ VERIFY MEMBER JOINED
+      let isJoined = false;
+
+      try {
+        await client.invoke(new Api.channels.GetParticipant({
+          channel: group,
+          participant: entity
+        }));
+
+        isJoined = true;
+      } catch (e) {
+        isJoined = false;
+      }
+
+      // 3️⃣ ONLY THEN SUCCESS
+      if (isJoined) {
+        stats.success++;
+        logs.push({
+          username: username || id,
+          account: accName,
+          status: "success"
+        });
+      } else {
+        stats.fail++;
+        logs.push({
+          username: username || id,
+          account: accName,
+          status: "fail (not joined)"
+        });
+      }
+
+      await sleep(DELAY);
+
+    } catch (err) {
+
+      stats.fail++;
+      logs.push({
+        username: username || id,
+        account: accName,
+        status: "fail"
+      });
+
+      if (err.message?.includes("FLOOD_WAIT")) {
+        const wait = err.seconds || 5;
+        await sleep(wait * 1000);
+      }
+    }
+
+    u++;
+  }
+
+  isRunning = false;
+})();
+
+  res.json({ message: "Started" });
+});
 
 /* ================= STOP ================= */
-async function stop(){
-  document.getElementById("loaderBar").style.display="none";
-  const r = await fetch("/stop",{method:"POST"});
-  document.getElementById("status").innerText=(await r.json()).message;
-}
+app.post("/stop", (req, res) => {
+  isRunning = false;
+  res.json({ message: "Stopped" });
+});
 
-/* ================= RESTART ================= */
-async function restart(){
-  document.getElementById("loaderBar").style.display="none";
-  await fetch("/restart",{method:"POST"});
-  document.getElementById("success").innerText=0;
-  document.getElementById("fail").innerText=0;
-  document.getElementById("memberList").innerHTML="";
-  selectedAccounts.clear();
-}
+/* ================= STATS ================= */
+app.get("/stats", (req, res) => {
+  res.json(stats);
+});
 
-/* ================= LIVE ================= */
-setInterval(async()=>{
+/* ================= LOGS ================= */
+app.get("/member-logs", (req, res) => {
+  res.json(logs.slice(-500));
+});
 
-  const stats = await fetch("/stats").then(r=>r.json());
-  document.getElementById("success").innerText=stats.success;
-  document.getElementById("fail").innerText=stats.fail;
-
-  const logs = await fetch("/member-logs").then(r=>r.json());
-
-  const box = document.getElementById("memberList");
-  box.innerHTML="";
-
-  logs.slice(-20).forEach(l=>{
-    box.innerHTML+=`
-      <div>${l.status==="success"?"✅":"❌"} ${l.username}</div>
-    `;
-  });
-
-},2000);
-
-/* ================= PAGE ================= */
-function showPage(p){
-  document.getElementById("homePage").style.display=p==="home"?"block":"none";
-  document.getElementById("accountsPage").style.display=p==="accounts"?"block":"none";
-}
-
-/* INIT */
-showPage("home");
-loadAccounts();
-
-</script>
-
-</body>
-</html>
+/* ================= SERVER ================= */
+app.listen(PORT, () => {
+  console.log("🚀 Server running on", PORT);
+});
